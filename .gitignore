@@ -1,0 +1,42 @@
+# General temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# IDE / PlatformIO artifacts
+.vscode/
+.pio/
+.pioenvs/
+.piolibdeps/
+.cache/
+
+# Root: ignore everything by default
+/*
+
+# Allow root files that should remain tracked
+!.gitignore
+!README.md
+
+# Allow project directories
+!1.conveyor/
+!2.small conveyor/
+!3.packaging line/
+
+# 1.conveyor: ignore everything except src and README
+1.conveyor/*
+!1.conveyor/src/
+!1.conveyor/README.md
+
+# 2.small conveyor: ignore everything except src and README
+2.small conveyor/*
+!2.small conveyor/src/
+!2.small conveyor/README.md
+
+# 3.packaging line: ignore everything except src and README
+3.packaging line/*
+!3.packaging line/src/
+!3.packaging line/README.md
