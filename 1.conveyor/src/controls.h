@@ -1,12 +1,20 @@
 #pragma once
 #include <Arduino.h>
 #include "pinout.h"
+#include "config.h"
 
 struct ButtonState {
     bool current = false;
     bool last = false;
     unsigned long lastChange = 0;
     bool pressedEvent = false;
+};
+
+struct SensorState {
+    bool current = false;
+    bool last = false;
+    unsigned long lastChange = 0;
+    bool rising = false;
 };
 
 enum ButtonMode {
@@ -55,20 +63,9 @@ public:
         updateButton(start_PIN, startBtn);
         updateButton(stop_PIN, stopBtn);
 
-        // Оновлення датчиків (INPUT_PULLUP: активний = LOW)
-        bool rawS1 = (digitalRead(sensor_1) == HIGH);
-        bool rawS2 = (digitalRead(sensor_2) == HIGH);
-
-        bool s1 = config.invertS1 ? rawS1 : !rawS1;
-        bool s2 = config.invertS2 ? rawS2 : !rawS2;
-
-        // Edge detection
-        sensor1Rising = (!sensor1State && s1);
-        sensor2Rising = (!sensor2State && s2);
-        
-        sensor1State = s1;
-        sensor2State = s2;
-        
+        // Оновлення датчиків з антидребезгом
+        updateSensor(sensor_1, sensor1, config.invertS1);
+        updateSensor(sensor_2, sensor2, config.invertS2);
     }
 
     // --- Кнопки ---
@@ -84,13 +81,13 @@ public:
 
     // --- Датчики ---
     // Датчик 1: наявність баночки під соплом розливу фарби
-    bool isSensor1Active() { return sensor1State; }
+    bool isSensor1Active() { return sensor1.current; }
     // Датчик 2: наявність баночки під пресом закривання кришки
-    bool isSensor2Active() { return sensor2State; }
+    bool isSensor2Active() { return sensor2.current; }
 
     // Події фронту (rising edge)
-    bool sensor1RisingEdge() { bool e = sensor1Rising; sensor1Rising = false; return e; }
-    bool sensor2RisingEdge() { bool e = sensor2Rising; sensor2Rising = false; return e; }
+    bool sensor1RisingEdge() { bool e = sensor1.rising; sensor1.rising = false; return e; }
+    bool sensor2RisingEdge() { bool e = sensor2.rising; sensor2.rising = false; return e; }
     
 
 private:
@@ -102,11 +99,7 @@ private:
     bool startToggleState = false;
     bool stopToggleState = false;
 
-    bool sensor1State = false;
-    bool sensor2State = false;
-    
-    bool sensor1Rising = false;
-    bool sensor2Rising = false;
+    SensorState sensor1, sensor2;
     
 
     void updateButton(uint8_t pin, ButtonState& btn) {
@@ -121,6 +114,27 @@ private:
             }
         }
         btn.last = reading;
+    }
+
+    void updateSensor(uint8_t pin, SensorState& sensor, bool invert) {
+        // Читаємо сире значення (INPUT_PULLUP: активний = LOW)
+        bool rawReading = (digitalRead(pin) == LOW);
+        bool reading = invert ? !rawReading : rawReading;
+        
+        // Якщо значення змінилося - починаємо відлік часу антидребезгу
+        if (reading != sensor.last) {
+            sensor.lastChange = millis();
+        }
+        
+        // Перевіряємо, чи пройшов час антидребезгу
+        if ((millis() - sensor.lastChange) > SENSOR_DEBOUNCE_TIME_MS) {
+            if (reading != sensor.current) {
+                // Edge detection для rising edge (перехід з false на true)
+                sensor.rising = (!sensor.current && reading);
+                sensor.current = reading;
+            }
+        }
+        sensor.last = reading;
     }
 
     bool handleButton(ButtonState& btn, bool& toggleRef, ButtonMode mode, bool invert) {
