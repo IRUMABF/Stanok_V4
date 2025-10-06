@@ -24,8 +24,8 @@
 // ========== НАЛАШТУВАЛЬНІ ПАРАМЕТРИ ==========
 
 // Параметри конвеєра
-const int STEP_PIN = 2;           // Пін для кроків
-const int DIR_PIN = 5;            // Пін для напрямку
+const int STEP_PIN = 4;           // Пін для кроків
+const int DIR_PIN = 7;            // Пін для напрямку
 const int ENABLE_PIN = 8;         // Пін для увімкнення драйвера
 const int SENSOR_PIN = 9;         // Пін датчика
 const int PNEUMATIC_PIN = 12;     // Пін пневмоклапана (інвертований сигнал: LOW=увімкнено, HIGH=вимкнено)

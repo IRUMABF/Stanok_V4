@@ -22,11 +22,12 @@ const int DELAY_DIST_10_MOVE = 200;     // Утримання спайок і п
 const int DELAY_DIST_11_MOVE = 400;     // Рух соплом вперед/назад
 const int DELAY_DIST_12_MOVE = 400;     // Силіконова планка для запайки
 const int DELAY_DIST_13_MOVE = 300;     // Скидання готового пакету
-const int DELAY_DIST_14_MOVE = 0;     // Охолодження ленти
+const int DELAY_DIST_14_MOVE = 500;     // Охолодження ленти
 const int DELAY_VACUM_SOPLO = 1000;     // Затримка після переключення клапана на вакуумування перед відпусканням присосок
 
 // Процеси
 const int DELAY_HEATING = 1700;          // Час нагріву
+const int DELAY_HEATING_POSLE = 500;    // Час переачі тепла від ленти після виключення нагріву
 const int DELAY_COOLING = 0;          // Час охолодження
 const int DELAY_PARALLEL_CYLINDERS = 50; // Затримка між активацією паралельних циліндрів
 
@@ -202,7 +203,7 @@ void packageSpikes() {
   heatingOn();
   delay(DELAY_HEATING); // час нагріву в мілісекундах
   heatingOff();
-  
+  delay(DELAY_HEATING_POSLE); // час нагріву в мілісекундах після виключення нагріву
   // 3.3. Вимкнення вакууму, клапан у положення "атмосфера"
   //setVacuumValve(VALVE_POS_1);
   
@@ -252,6 +253,5 @@ void loop() {
       delay(100);  // Невелика затримка щоб не навантажувати процесор
     }
   }
-  
   delay(100);  // Затримка в головному циклі
 }
