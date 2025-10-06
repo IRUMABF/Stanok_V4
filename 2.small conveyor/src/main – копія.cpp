@@ -46,9 +46,7 @@ const float CONVEYOR_Z_OFFSET_MM_FIRST = 2.0;   // Дотягування для
 const float CONVEYOR_Z_OFFSET_MM_SECOND = 10.0;  // Дотягування для 2-ї та 4-ї партії (мм)
 
 // Параметри пневматики
-const unsigned long PNEUMATIC_DELAY_MS = 2000;   // Час роботи пневматики (мс) для партій 1–3
-const unsigned long CYL_EXTEND_TIME_MS = 1000;    // Час висування циліндра (мс) для 4-ї партії
-const unsigned long CYL_HOLD_TIME_MS = 2000;     // Час утримання у висунутому стані (мс) для 4-ї партії
+const unsigned long PNEUMATIC_DELAY_MS = 2000;   // Час роботи пневматики (мс)
 
 // Параметри сигналу
 const unsigned long SIGNAL_DELAY_MS = 5000;      // Час сигналу після 4 партій (мс)
@@ -135,26 +133,14 @@ void setup() {
 }
 
 void loop() {
-  // Перевірка дозволу роботи з відслідковуванням фронту сигналу START/STOP
-  static bool lastStartSignalHigh = false; // запам'ятовуємо попередній стан сигналу
-  bool startSignalHigh = (digitalRead(START_STOP_PIN) == HIGH);
-
-  if (!startSignalHigh) {
+  // Перевірка дозволу роботи
+  if (digitalRead(START_STOP_PIN) == LOW) {
     // При низькому рівні зупиняємо все
     digitalWrite(ENABLE_PIN, HIGH);      // Вимкнути драйвер
     digitalWrite(PNEUMATIC_PIN, HIGH);   // Вимкнути пневматику
     digitalWrite(SIGNAL_PIN, LOW);       // Вимкнути сигнал
-    lastStartSignalHigh = false;         // фіксуємо, що сигнал був LOW
     return; // Вихід з loop() - нічого далі не виконується
   }
-
-  // На фронті (LOW -> HIGH) готуємо систему до коректного перезапуску
-  if (startSignalHigh && !lastStartSignalHigh) {
-    ignoreSensor = false;                // зняти ігнорування датчика
-    currentState = IDLE;                 // перейти у стан ініціалізації руху
-    // драйвер буде увімкнено в handleIdleState()
-  }
-  lastStartSignalHigh = startSignalHigh;
 
   // Перевірка команд через серіальний порт
   //checkSerialCommands();
@@ -262,54 +248,35 @@ void handlePullingState() {
 }
 
 void handlePneumaticWorkingState() {
-  // Особлива логіка для 4-ї партії: спочатку повний цикл циліндра (висування + утримання + згортання), потім сигнал
+  // Особлива логіка для 4-ї партії: одночасно вмикаємо циліндр і сигнал
   if (batchCount == 4) {
-    unsigned long elapsed = millis() - stateStartTime; // загальний час у цьому стані
-
-    // Етап 1: лише висування — до CYL_EXTEND_TIME_MS
-    if (elapsed < CYL_EXTEND_TIME_MS) {
-      if (digitalRead(PNEUMATIC_PIN) != LOW) {
-        digitalWrite(PNEUMATIC_PIN, LOW);
-        Serial.println("4-та партія: циліндр увімкнено (висування)");
-      }
-      if (digitalRead(SIGNAL_PIN) != LOW) {
-        digitalWrite(SIGNAL_PIN, LOW);
-      }
-      return;
-    }
-
-    // Етап 2: після висування — одночасно стартують тривалість утримання і сигналу
-    unsigned long phaseElapsed = elapsed - CYL_EXTEND_TIME_MS; // час від старту етапу 2
-
-    // Увімкнути сигнал на початку етапу 2 (один раз)
+    // Увімкнути пневматику (інвертований сигнал)
+    digitalWrite(PNEUMATIC_PIN, LOW);
+    // Увімкнути сигнал лише один раз на початку інтервалу
     if (digitalRead(SIGNAL_PIN) == LOW) {
       digitalWrite(SIGNAL_PIN, HIGH);
-      Serial.println("4-та партія: сигнал увімкнено (старт одночасно з утриманням)");
+      Serial.println("4-та партія: сигнал і циліндр увімкнено");
     }
 
-    // Тримати циліндр увімкненим під час утримання, потім вимкнути
-    if (phaseElapsed < CYL_HOLD_TIME_MS) {
-      if (digitalRead(PNEUMATIC_PIN) != LOW) {
-        digitalWrite(PNEUMATIC_PIN, LOW);
-      }
-    } else {
+    unsigned long elapsed = millis() - stateStartTime; // загальний час сигналу
+
+    // Після закінчення часу тримання циліндра — вимкнути його, сигнал продовжує світити
+    if (elapsed >= PNEUMATIC_DELAY_MS) {
       if (digitalRead(PNEUMATIC_PIN) == LOW) {
         digitalWrite(PNEUMATIC_PIN, HIGH);
-        Serial.println("4-та партія: циліндр вимкнено (після утримання)");
+        Serial.println("4-та партія: циліндр вимкнено, сигнал триває");
       }
     }
 
-    // Завершити сигнал після його власного таймера від старту етапу 2
-    if (phaseElapsed >= SIGNAL_DELAY_MS) {
-      if (digitalRead(SIGNAL_PIN) == HIGH) {
-        digitalWrite(SIGNAL_PIN, LOW);
-      }
-      batchCount = 0;
+    // Після повних SIGNAL_DELAY_MS — вимкнути сигнал і завершити цикл з обнуленням лічильника
+    if (elapsed >= SIGNAL_DELAY_MS) {
+      digitalWrite(SIGNAL_PIN, LOW);
+      batchCount = 0;  // Скинути лічильник партій
       ignoreSensor = false;
       currentState = IDLE;
       Serial.println("4-та партія: сигнал завершено, початок нового циклу");
     }
-    return;
+    return; // Очікуємо завершення обох інтервалів у цьому стані
   }
 
   // Звичайна логіка для партій 1–3

@@ -20,24 +20,28 @@ enum MachineState {
   MACHINE_PAUSED       // станок на паузі
 };
 
-// Стани операцій
-enum OperationState {
-  OP_IDLE,                    // очікування
-  OP_PAINT_WAIT_SENSOR,       // очікування датчика 1 для розливання
-  OP_PAINT_DOCIAG,            // дотяжка після датчика 1
-  OP_PAINT_PISTON,            // робота поршня фарби
-  OP_PAINT_DELAY,             // затримка після розливання
-  OP_CAP_WAIT_SENSOR,         // очікування датчика 2 для закривання
-  OP_CAP_SCREW_ON,            // увімкнення завертання кришок
-  OP_CAP_SCREW_PAUSE,         // пауза перед закриванням
-  OP_CAP_CLOSE,               // закривання кришок
-  OP_CAP_CLOSE_PAUSE,         // пауза після закривання
-  OP_CAP_SCREW_OFF            // вимкнення завертання кришок
+// Паралельні стани: розлив (PAINT) та закривання (CAP)
+enum PaintState {
+  P_IDLE,                 // очікування
+  P_WAIT_SENSOR,          // очікування датчика 1
+  P_DOCIAG,               // дотяжка після датчика 1
+  P_PISTON,               // робота поршня фарби
+  P_DELAY                 // затримка після розливання
+};
+
+enum CapState {
+  C_IDLE,                 // очікування
+  C_WAIT_SENSOR,          // очікування датчика 2
+  C_SCREW_ON,             // увімкнення завертання кришок
+  C_SCREW_PAUSE,          // пауза перед закриванням
+  C_CLOSE,                // закривання кришок
+  C_CLOSE_PAUSE           // пауза після закривання
 };
 
 // Глобальні змінні стану
 MachineState machineState = MACHINE_STOPPED;
-OperationState operationState = OP_IDLE;
+PaintState paintState = P_IDLE;
+CapState capState = C_IDLE;
 
 // Лічильники для ігнорування баночок
 int paintIgnoreCount = 0;
@@ -54,7 +58,9 @@ unsigned long capClosePauseStart = 0;
 
 // Оголошення функцій
 void handleStartStopButtons();
-void handleMachineOperations();
+void handlePaintOperations();
+void handleCapOperations();
+void arbitrateConveyor();
 void updateMachineSignals();
 void updateLEDs();
 void pauseAllTimers();
@@ -62,7 +68,7 @@ void resumeAllTimers();
 void shiftAllTimers();
 
 void setup() {
-  //Serial.begin(115200);
+  Serial.begin(9600);
   
   // Ініціалізація всіх компонентів
   controls.begin();
@@ -96,6 +102,8 @@ void loop() {
   
   // Обробка кнопок старт/стоп
   handleStartStopButtons();
+  // Тримати вихідний сигнал у синхроні з поточним станом
+  updateMachineSignals();
   
   // Якщо станок зупинений - нічого не робимо
   if (machineState == MACHINE_STOPPED) {
@@ -108,8 +116,10 @@ void loop() {
     return;
   }
   
-  // Основна логіка роботи станка
-  handleMachineOperations();
+  // Паралельна логіка: розлив і закривання незалежно
+  handlePaintOperations();
+  handleCapOperations();
+  arbitrateConveyor();
 }
 
 // Обробка кнопок старт/стоп
@@ -118,7 +128,8 @@ void handleStartStopButtons() {
     if (machineState == MACHINE_STOPPED) {
       // Запуск станка
       machineState = MACHINE_RUNNING;
-      operationState = OP_IDLE;
+      paintState = P_IDLE;
+      capState = C_IDLE;
       paintIgnoreCount = 0;
       capIgnoreCount = 0;
       conveyor.start();
@@ -150,7 +161,8 @@ void handleStartStopButtons() {
     } else if (machineState == MACHINE_PAUSED) {
       // Повна зупинка станка
       machineState = MACHINE_STOPPED;
-      operationState = OP_IDLE;
+      paintState = P_IDLE;
+      capState = C_IDLE;
       conveyor.stop();
       valve1.off();
       valve3.off();
@@ -163,121 +175,123 @@ void handleStartStopButtons() {
   }
 }
 
-// Основна логіка операцій станка
-void handleMachineOperations() {
-  switch (operationState) {
-    case OP_IDLE:
-      // Запускаємо конвеєр і переходимо до очікування датчиків
-      if (!conveyor.isRunning()) {
-        conveyor.start();
-      }
-      operationState = OP_PAINT_WAIT_SENSOR;
+// Розлив фарби — незалежна логіка
+void handlePaintOperations() {
+  switch (paintState) {
+    case P_IDLE:
+      paintState = P_WAIT_SENSOR;
       break;
-      
-    case OP_PAINT_WAIT_SENSOR:
-      // Запускаємо конвеєр якщо він не працює
-      if (!conveyor.isRunning()) {
-        conveyor.start();
-      }
-      // Очікування спрацювання датчика 1
+    case P_WAIT_SENSOR:
       if (controls.sensor1RisingEdge()) {
         if (paintIgnoreCount == 0) {
-          // Перша баночка - обробляємо
           conveyor.stopWithDociag(JAR_CENTERING_MM);
-          operationState = OP_PAINT_DOCIAG;
+          paintState = P_DOCIAG;
         } else {
-          // Ігноруємо наступні 5 баночок
           paintIgnoreCount--;
         }
       }
       break;
-      
-    case OP_PAINT_DOCIAG:
-      // Очікування завершення дотяжки
+    case P_DOCIAG:
       if (!conveyor.isRunning()) {
         valve3.onFor(PAINT_PISTON_HOLD_TIME);
-        operationState = OP_PAINT_PISTON;
+        paintState = P_PISTON;
       }
       break;
-      
-    case OP_PAINT_PISTON:
-      // Очікування завершення роботи поршня
+    case P_PISTON:
       if (!valve3.isTimerActive()) {
         paintDelayStart = millis();
-        operationState = OP_PAINT_DELAY;
+        paintState = P_DELAY;
       }
       break;
-      
-    case OP_PAINT_DELAY:
-      // Неблокуюча затримка після розливання
+    case P_DELAY:
       if (millis() - paintDelayStart >= 50) {
-        paintIgnoreCount = JARS_IN_SET - 1; // ігноруємо наступні 5 баночок
-        operationState = OP_CAP_WAIT_SENSOR;
-      }
-      break;
-      
-    case OP_CAP_WAIT_SENSOR:
-      // Запускаємо конвеєр якщо він не працює
-      if (!conveyor.isRunning()) {
-        conveyor.start();
-        // Подаємо імпульс на PNEUMATIC_1 при відновленні руху після розливки
+        paintIgnoreCount = JARS_IN_SET - 1;
+        paintState = P_WAIT_SENSOR;
+              // Імпульс на PNEUMATIC_1 при відновленні руху
         valve1.onFor(PNEUMATIC1_ON_TIME_MS + PNEUMATIC1_HOLD_TIME_MS);
       }
-      // Очікування спрацювання датчика 2
+      break;
+  }
+}
+
+// Закривання кришок — незалежна логіка
+void handleCapOperations() {
+  switch (capState) {
+    case C_IDLE:
+      capState = C_WAIT_SENSOR;
+      break;
+    case C_WAIT_SENSOR:
       if (controls.sensor2RisingEdge()) {
         if (capIgnoreCount == 0) {
-          // Перша баночка - обробляємо
           conveyor.stop();
-          valve4.on(); // увімкнення завертання кришок
-          operationState = OP_CAP_SCREW_ON;
+          valve4.on();
+          capState = C_SCREW_ON;
         } else {
-          // Ігноруємо наступні 5 баночок
           capIgnoreCount--;
         }
       }
       break;
-      
-    case OP_CAP_SCREW_ON:
-      // Пауза перед закриванням кришок
+    case C_SCREW_ON:
       capScrewPauseStart = millis();
-      operationState = OP_CAP_SCREW_PAUSE;
+      capState = C_SCREW_PAUSE;
       break;
-      
-    case OP_CAP_SCREW_PAUSE:
-      // Неблокуюча пауза перед закриванням кришок
+    case C_SCREW_PAUSE:
       if (millis() - capScrewPauseStart >= STEP_PAUSE_CAP_SCREW_MS) {
         valve5.onFor(CLOSE_CAP_HOLD_TIME);
-        operationState = OP_CAP_CLOSE;
+        capState = C_CLOSE;
       }
       break;
-      
-    case OP_CAP_CLOSE:
-      // Очікування завершення закривання кришок
+    case C_CLOSE:
       if (!valve5.isTimerActive()) {
         capClosePauseStart = millis();
-        operationState = OP_CAP_CLOSE_PAUSE;
+        capState = C_CLOSE_PAUSE;
       }
       break;
-      
-    case OP_CAP_CLOSE_PAUSE:
-      // Неблокуюча пауза після закривання кришок
+    case C_CLOSE_PAUSE:
       if (millis() - capClosePauseStart >= STEP_PAUSE_CAP_CLOSE_MS) {
-        valve4.off(); // вимкнення завертання кришок
-        capIgnoreCount = JARS_IN_SET - 1; // ігноруємо наступні 5 баночок
-        operationState = OP_IDLE; // повертаємося до початку циклу
+        valve4.off();
+        capIgnoreCount = JARS_IN_SET - 1;
+        capState = C_WAIT_SENSOR;
       }
       break;
-      
-    default:
-      operationState = OP_IDLE;
-      break;
+  }
+}
+
+// Арбітраж керування конвеєром: обидві підсистеми мають рівні права зупинки
+void arbitrateConveyor() {
+  if (machineState != MACHINE_RUNNING) return;
+  if (conveyor.isDociagActive()) return; // дотягування триває — не втручатися
+
+  bool paintRequiresStop = (paintState == P_DOCIAG || paintState == P_PISTON || paintState == P_DELAY);
+  bool capRequiresStop = (capState == C_SCREW_ON || capState == C_SCREW_PAUSE || capState == C_CLOSE || capState == C_CLOSE_PAUSE);
+
+  bool shouldRun = !(paintRequiresStop || capRequiresStop);
+
+  if (!shouldRun) {
+    if (conveyor.isRunning()) {
+      conveyor.stop();
+    }
+  } else {
+    if (!conveyor.isRunning()) {
+      conveyor.start();
+    }
   }
 }
 
 // Оновлення сигналів станка
 void updateMachineSignals() {
-  bool machineRunning = (machineState == MACHINE_RUNNING);
-  digitalWrite(START_STOP_PIN, machineRunning ? HIGH : LOW);
+  // Активний сигнал для іншого контролера має бути HIGH тільки коли станок працює (RUNNING),
+  // і LOW коли зупинений (STOPPED) або на паузі (PAUSED).
+  static MachineState lastState = MACHINE_STOPPED;
+  bool machineActive = (machineState == MACHINE_RUNNING);
+  digitalWrite(START_STOP_PIN, machineActive ? HIGH : LOW);
+  if (machineState != lastState) {
+    Serial.print("updateMachineSignals: state=");
+    Serial.print(machineState == MACHINE_STOPPED ? "STOPPED" : machineState == MACHINE_RUNNING ? "RUNNING" : "PAUSED");
+    Serial.print(", pin=");
+    Serial.println(machineActive ? "HIGH" : "LOW");
+    lastState = machineState;
+  }
 }
 
 // Оновлення світлодіодів
