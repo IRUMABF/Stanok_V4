@@ -17,6 +17,7 @@
  * Команди через Serial Monitor (9600 baud):
  * - micro:1, micro:8, micro:16 - змінити мікростепи
  * - speed:XX - змінити швидкість (мм/с)
+ * - decel:XX - змінити коефіцієнт гальмування (0.1-1.0)
  * - status - показати поточний стан
  * - help - показати всі команди
  */
@@ -26,11 +27,12 @@
 // Параметри конвеєра
 const int STEP_PIN = 4;           // Пін для кроків
 const int DIR_PIN = 7;            // Пін для напрямку
+
 const int ENABLE_PIN = 8;         // Пін для увімкнення драйвера
 const int SENSOR_PIN = 9;         // Пін датчика
 const int PNEUMATIC_PIN = 12;     // Пін пневмоклапана (інвертований сигнал: LOW=увімкнено, HIGH=вимкнено)
 const int SIGNAL_PIN = 13;        // Пін сигналу готовності 4 спайок
-const int START_STOP_PIN = 11;  // сигнал для старту/стопу іншого контролера 
+const int START_STOP_PIN = 11;  // сигнал для старту/стопу іншого контролера
 
 // Параметри двигуна
 const float PULLEY_DIAMETER_MM = 40.0;    // Діаметр шківа в мм
@@ -42,12 +44,17 @@ const int STEPS_PER_REVOLUTION = 200;     // Кроків на оберт (по�
 int MICROSTEPS = 8;                       // Мікростепи (1 = повний крок, 8 = 1/8 кроку, 16 = 1/16 кроку)
 
 // Параметри дотягування для шахматного порядку
-const float CONVEYOR_Z_OFFSET_MM_FIRST = 2.0;   // Дотягування для 1-ї та 3-ї партії (мм)
-const float CONVEYOR_Z_OFFSET_MM_SECOND = 10.0;  // Дотягування для 2-ї та 4-ї партії (мм)
+const float CONVEYOR_Z_OFFSET_MM_FIRST = 10.0;   // Дотягування для 1-ї та 3-ї партії (мм)
+const float CONVEYOR_Z_OFFSET_MM_SECOND = 2.0;  // Дотягування для 2-ї та 4-ї партії (мм)
+
+// Параметри плавного гальмування
+const float MIN_DECELERATION_DISTANCE_MM = 0.5;  // Мінімальна відстань для гальмування (мм)
+const float MAX_DECELERATION_DISTANCE_MM = 8.0;  // Максимальна відстань для гальмування (мм)
+float DECELERATION_FACTOR = 0.3;                 // Коефіцієнт гальмування (0.1 = дуже плавно, 0.5 = швидко)
 
 // Параметри пневматики
 const unsigned long PNEUMATIC_DELAY_MS = 2000;   // Час роботи пневматики (мс) для партій 1–3
-const unsigned long CYL_EXTEND_TIME_MS = 1000;    // Час висування циліндра (мс) для 4-ї партії
+const unsigned long CYL_EXTEND_TIME_MS = 1100;    // Час висування циліндра (мс) для 4-ї партії
 const unsigned long CYL_HOLD_TIME_MS = 2000;     // Час утримання у висунутому стані (мс) для 4-ї партії
 
 // Параметри сигналу
@@ -96,6 +103,8 @@ void handlePullingState();
 void handlePneumaticWorkingState();
 void handleSignalActiveState();
 void performPull(float offsetMm);
+void performSmoothPull(float offsetMm);
+float calculateDecelerationDistance(float totalDistance);
 void checkSerialCommands();
 void recalculateParameters();
 
@@ -130,6 +139,9 @@ void setup() {
   Serial.print("Розрахована затримка: "); Serial.print(STEP_DELAY_US); Serial.println(" мкс");
   Serial.print("Мінімальна затримка: "); Serial.print(MIN_STEP_DELAY_US); Serial.println(" мкс");
   Serial.print("Фактична затримка: "); Serial.print(max(STEP_DELAY_US - 10, MIN_STEP_DELAY_US)); Serial.println(" мкс");
+  Serial.print("Коефіцієнт гальмування: "); Serial.println(DECELERATION_FACTOR);
+  Serial.print("Відстань гальмування: "); Serial.print(MIN_DECELERATION_DISTANCE_MM); 
+  Serial.print(" - "); Serial.print(MAX_DECELERATION_DISTANCE_MM); Serial.println(" мм");
   
   currentState = IDLE;
 }
@@ -157,7 +169,7 @@ void loop() {
   lastStartSignalHigh = startSignalHigh;
 
   // Перевірка команд через серіальний порт
-  //checkSerialCommands();
+  checkSerialCommands();
   
   // Читання стану датчика
   sensorState = digitalRead(SENSOR_PIN) == LOW; // LOW = спрацював (підтяжка до VCC)
@@ -251,8 +263,8 @@ void handleSensorTriggeredState() {
 }
 
 void handlePullingState() {
-  // Виконати дотягування
-  performPull(currentOffset);
+  // Виконати плавне дотягування
+  performSmoothPull(currentOffset);
   
   // Перейти до роботи пневматики
   currentState = PNEUMATIC_WORKING;
@@ -392,16 +404,26 @@ void checkSerialCommands() {
       } else {
         Serial.println("Невірні мікростепи! Доступні: 1, 2, 4, 8, 16");
       }
+    } else if (command.startsWith("decel:")) {
+      float newDecelFactor = command.substring(6).toFloat();
+      if (newDecelFactor >= 0.1 && newDecelFactor <= 1.0) {
+        DECELERATION_FACTOR = newDecelFactor;
+        Serial.print("Коефіцієнт гальмування змінено на: "); Serial.println(DECELERATION_FACTOR);
+      } else {
+        Serial.println("Невірний коефіцієнт гальмування! Діапазон: 0.1 - 1.0");
+      }
     } else if (command == "status") {
       Serial.print("Поточна швидкість: "); Serial.print(currentSpeed); Serial.println(" мм/с");
       Serial.print("Мікростепи: "); Serial.print(MICROSTEPS); Serial.println("x");
       Serial.print("Кроків на мм: "); Serial.println(STEPS_PER_MM);
+      Serial.print("Коефіцієнт гальмування: "); Serial.println(DECELERATION_FACTOR);
       Serial.print("Стан: "); Serial.println(currentState);
       Serial.print("Партія: "); Serial.println(batchCount);
     } else if (command == "help") {
       Serial.println("Команди:");
       Serial.println("speed:XX - встановити швидкість (наприклад: speed:30)");
       Serial.println("micro:XX - встановити мікростепи (1, 2, 4, 8, 16)");
+      Serial.println("decel:XX - встановити коефіцієнт гальмування (0.1-1.0)");
       Serial.println("status - показати поточний стан");
       Serial.println("help - показати цю довідку");
     }
@@ -415,4 +437,84 @@ void recalculateParameters() {
   
   // Перерахунок затримки між кроками
   STEP_DELAY_US = (unsigned long)(1000000.0 / (DESIRED_SPEED_MM_S * STEPS_PER_MM));
+}
+
+float calculateDecelerationDistance(float totalDistance) {
+  // Розрахувати відстань гальмування на основі загальної відстані
+  // Для коротких відстаней - більш різке гальмування
+  // Для довгих відстаней - більш плавне гальмування
+  
+  float decelDistance;
+  
+  if (totalDistance <= 3.0) {
+    // Для коротких відстаней (до 3 мм) - швидке гальмування
+    decelDistance = MIN_DECELERATION_DISTANCE_MM;
+  } else if (totalDistance <= 8.0) {
+    // Для середніх відстаней (3-8 мм) - пропорційне гальмування
+    decelDistance = MIN_DECELERATION_DISTANCE_MM + 
+                   (totalDistance - 3.0) * (MAX_DECELERATION_DISTANCE_MM - MIN_DECELERATION_DISTANCE_MM) / 5.0;
+  } else {
+    // Для довгих відстаней (більше 8 мм) - максимальне плавне гальмування
+    decelDistance = MAX_DECELERATION_DISTANCE_MM;
+  }
+  
+  // Переконатися, що відстань гальмування не перевищує половину загальної відстані
+  decelDistance = min(decelDistance, totalDistance * 0.5);
+  
+  return decelDistance;
+}
+
+void performSmoothPull(float offsetMm) {
+  // Розрахувати кількість кроків для дотягування
+  int totalSteps = (int)(offsetMm * STEPS_PER_MM);
+  
+  // Розрахувати відстань гальмування
+  float decelDistanceMm = calculateDecelerationDistance(offsetMm);
+  int decelSteps = (int)(decelDistanceMm * STEPS_PER_MM);
+  
+  // Кроки з постійною швидкістю
+  int constantSpeedSteps = totalSteps - decelSteps;
+  
+  Serial.print("Виконуємо плавне дотягування на "); Serial.print(offsetMm); 
+  Serial.print(" мм ("); Serial.print(totalSteps); Serial.println(" кроків)");
+  Serial.print("Відстань гальмування: "); Serial.print(decelDistanceMm); 
+  Serial.print(" мм ("); Serial.print(decelSteps); Serial.println(" кроків)");
+  
+  // Увімкнути драйвер
+  digitalWrite(ENABLE_PIN, LOW);
+  digitalWrite(DIR_PIN, HIGH); // Напрямок дотягування
+  
+  // Розрахувати базову затримку для поточної швидкості
+  unsigned long baseStepDelay = (unsigned long)(1000000.0 / (currentSpeed * STEPS_PER_MM));
+  baseStepDelay = max(baseStepDelay - 10, MIN_STEP_DELAY_US);
+  
+  // Етап 1: Рух з постійною швидкістю
+  for (int i = 0; i < constantSpeedSteps; i++) {
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(baseStepDelay);
+  }
+  
+  // Етап 2: Плавне гальмування
+  for (int i = 0; i < decelSteps; i++) {
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(STEP_PIN, LOW);
+    
+    // Розрахувати поточну затримку для гальмування
+    // Використовуємо квадратичну функцію для плавного збільшення затримки
+    float progress = (float)i / (float)decelSteps; // 0.0 до 1.0
+    float decelFactor = 1.0 + (progress * progress * DECELERATION_FACTOR * 10.0);
+    
+    unsigned long currentDelay = (unsigned long)(baseStepDelay * decelFactor);
+    currentDelay = max(currentDelay, MIN_STEP_DELAY_US);
+    
+    delayMicroseconds(currentDelay);
+  }
+  
+  // Вимкнути драйвер
+  digitalWrite(ENABLE_PIN, HIGH);
+  
+  Serial.println("Плавне дотягування завершено");
 }
