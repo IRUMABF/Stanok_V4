@@ -9,6 +9,7 @@
 Controls controls;
 Conveyor conveyor;
 PneumaticValve valve1(PNEUMATIC_1_PIN, true);  // інвертований сигнал
+PneumaticValve valve2(PNEUMATIC_2_PIN, true);  // другий пневмоциліндр для розливу фарби
 PneumaticValve valve3(PNEUMATIC_3_PIN, true);  // поршень фарби
 PneumaticValve valve4(PNEUMATIC_4_PIN);  // завертання кришок
 PneumaticValve valve5(PNEUMATIC_5_PIN);  // закривання кришок
@@ -25,7 +26,8 @@ enum PaintState {
   P_IDLE,                 // очікування
   P_WAIT_SENSOR,          // очікування датчика 1
   P_DOCIAG,               // дотяжка після датчика 1
-  P_PISTON,               // робота поршня фарби
+  P_PISTON,               // робота поршня фарби (valve3)
+  P_PISTON_2,             // робота другого поршня фарби (valve2)
   P_DELAY                 // затримка після розливання
 };
 
@@ -74,6 +76,7 @@ void setup() {
   controls.begin();
   conveyor.begin();
   valve1.begin();
+  valve2.begin();
   valve3.begin();
   valve4.begin();
   valve5.begin();
@@ -96,6 +99,7 @@ void loop() {
   controls.update();
   conveyor.update();
   valve1.update();
+  valve2.update();
   valve3.update();
   valve4.update();
   valve5.update();
@@ -165,6 +169,7 @@ void handleStartStopButtons() {
       capState = C_IDLE;
       conveyor.stop();
       valve1.off();
+      valve2.off();
       valve3.off();
       valve4.off();
       valve5.off();
@@ -199,6 +204,13 @@ void handlePaintOperations() {
       break;
     case P_PISTON:
       if (!valve3.isTimerActive()) {
+        // Після першого поршня включаємо другий
+        valve2.onFor(PAINT_PISTON_2_HOLD_TIME);
+        paintState = P_PISTON_2;
+      }
+      break;
+    case P_PISTON_2:
+      if (!valve2.isTimerActive()) {
         paintDelayStart = millis();
         paintState = P_DELAY;
       }
@@ -262,7 +274,7 @@ void arbitrateConveyor() {
   if (machineState != MACHINE_RUNNING) return;
   if (conveyor.isDociagActive()) return; // дотягування триває — не втручатися
 
-  bool paintRequiresStop = (paintState == P_DOCIAG || paintState == P_PISTON || paintState == P_DELAY);
+  bool paintRequiresStop = (paintState == P_DOCIAG || paintState == P_PISTON || paintState == P_PISTON_2 || paintState == P_DELAY);
   bool capRequiresStop = (capState == C_SCREW_ON || capState == C_SCREW_PAUSE || capState == C_CLOSE || capState == C_CLOSE_PAUSE);
 
   bool shouldRun = !(paintRequiresStop || capRequiresStop);
@@ -315,6 +327,7 @@ void pauseAllTimers() {
 void resumeAllTimers() {
   pauseDuration = millis() - pauseStartTime;
   valve1.shiftTimers(pauseDuration);
+  valve2.shiftTimers(pauseDuration);
   valve3.shiftTimers(pauseDuration);
   valve4.shiftTimers(pauseDuration);
   valve5.shiftTimers(pauseDuration);
